@@ -30,13 +30,16 @@ const PRODUCTS = [
 // shocks exógenos: eventos reales que sacuden la economía
 const SHOCKS = {
   oil:     { name: "Shock petrolero",      emoji: "🛢️", color: "#ff8a3d", min: 2, max: 5, desc: "Se dispara el precio del crudo. Energía y transporte por las nubes.",  costPush: 0.004, potG: -0.0004, conf: -0.4, cats: ["energy"], catMult: 0.32 },
-  drought: { name: "Sequía severa",        emoji: "🌵", color: "#e0a83d", min: 3, max: 7, desc: "La cosecha se pierde. Los alimentos escasean y se encarecen.",         costPush: 0.0035, potG: -0.0003, conf: -0.5, cats: ["food"], catMult: 0.28 },
+  drought: { name: "Sequía severa",        emoji: "🌵", color: "#e0a83d", min: 3, max: 7, desc: "La cosecha se pierde. Los alimentos escasean y hay hambruna.",         costPush: 0.0035, potG: -0.0003, conf: -0.5, cats: ["food"], catMult: 0.28, popShock: -0.0004 },
   global:  { name: "Crisis global",        emoji: "🌐", color: "#6aa0ef", min: 3, max: 8, desc: "Recesión mundial: caen exportaciones y demanda externa.",             costPush: -0.001, potG: -0.0006, conf: -0.7, demandMult: 0.94, fxPush: 0.004, resDelta: -0.04 },
   panic:   { name: "Pánico financiero",    emoji: "💥", color: "#ff4d4d", min: 1, max: 4, desc: "Corrida bancaria y fuga de capitales. La moneda se desploma.",        costPush: 0.001, potG: -0.0008, conf: -1.4, fxPush: 0.020, resDelta: -0.10, risk: 800 },
-  pandemic:{ name: "Pandemia",             emoji: "🦠", color: "#b07de0", min: 4, max: 10, desc: "Cuarentenas y cadenas rotas: cae la producción y suben costos.",      costPush: 0.0025, potG: -0.0012, conf: -1.0, demandMult: 0.96 },
+  pandemic:{ name: "Pandemia",             emoji: "🦠", color: "#b07de0", min: 4, max: 10, desc: "Muertes y cuarentenas: cae la población, la producción y suben costos.", costPush: 0.0025, potG: -0.0012, conf: -1.0, demandMult: 0.96, popShock: -0.0028 },
   tech:    { name: "Boom tecnológico",     emoji: "🚀", color: "#4dd68a", min: 4, max: 9, desc: "Salto de productividad: crece la capacidad sin presionar precios.",   costPush: -0.0015, potG: 0.0014, conf: 0.8, cats: [], catMult: 0 },
   commodity:{ name: "Boom de commodities", emoji: "🌾", color: "#5fd3a8", min: 3, max: 7, desc: "Suben las exportaciones: entran divisas y se fortalece la moneda.",   costPush: 0, potG: 0.0005, conf: 0.6, fxPush: -0.008, resDelta: 0.12 },
+  default: { name: "Crisis de deuda / Default", emoji: "🏦", color: "#ff3b3b", min: 3, max: 6, desc: "El país no puede pagar: default, fuga masiva y colapso de la moneda.", costPush: 0.004, potG: -0.0015, conf: -2.0, fxPush: 0.03, resDelta: -0.05, risk: 1500 },
 };
+// shocks que pueden aparecer al azar (el default es endógeno, no aleatorio)
+const RANDOM_SHOCKS = ["oil", "drought", "global", "panic", "pandemic", "tech", "commodity"];
 const WORLD_INFL = 0.002;  // inflación mundial de referencia mensual (≈ 2,4% anual)
 const WORLD_RATE = 2.5;    // tasa internacional de referencia
 
@@ -81,11 +84,15 @@ function initWorld() {
     products: PRODUCTS.map((p) => ({ id: p.id, price: p.base, prev: p.base })),
     history: [{ day: 0, infl: 0, gdp: 100, unemp: 5, price: 100, pp: 200, fx: 100, blue: 100 }],
     news: [],
+    paper: [],            // ediciones mensuales del diario
+    paperName: pick(PAPER_NAMES),
     flash: null,
     // --- sector externo ---
     fx: fxBase, fxBase, prevFx: fxBase,
     fxBlue: fxBase, prevFxBlue: fxBase,  // dólar paralelo (blue)
     reserves: 6.0,       // meses de importaciones
+    debt: Math.round(Math.random() * 30) / 10,  // deuda externa (meses de import.)
+    prevDebt: 0,
     risk: 450,           // riesgo país (puntos básicos)
     fxDefense: 0,        // días de intervención cambiaria activa
     cepo: false,         // controles de cambio
@@ -98,6 +105,12 @@ function initWorld() {
     poverty: 24,         // % bajo la línea de pobreza
     gini: 38,            // desigualdad (0–100)
     unrest: 0,           // malestar social acumulado
+    credibility: 55,     // credibilidad del banco central (0–100)
+    informal: 28 + Math.random() * 16, // economía informal (% del PIB)
+    medianAge: 26 + Math.random() * 14, // edad media de la población
+    gov: 100,            // gobernabilidad / continuidad en el cargo (0–100)
+    gameOver: false,
+    gameOverReason: null,
     // --- shocks exógenos ---
     shock: null,         // { key, daysLeft, total }
     shockCooldown: 24,
@@ -181,6 +194,121 @@ const NEWS_POOL = {
   ],
 };
 
+const PAPER_NAMES = ["El Heraldo Económico", "Diario La Brújula", "El Observador del Plata", "Crónica Nacional", "El Correo Financiero", "La Voz del Mercado"];
+
+// titulares de relleno (sin valor económico, dan vida al diario)
+const PAPER_FLUFF = [
+  "Un perro callejero se vuelve la mascota oficial del mercado central.",
+  "Triunfo del seleccionado: la ciudad festeja toda la noche.",
+  "Pronostican un fin de semana soleado, ideal para la playa.",
+  "Polémica nacional: ¿el mate va con o sin azúcar?",
+  "Una abuela gana la lotería por tercera vez y dona todo.",
+  "Inauguran la feria del libro con récord de visitantes.",
+  "Furor por una serie que todos comentan en la oficina.",
+  "Un meteorito ilumina el cielo y se vuelve viral.",
+  "El club del barrio asciende de categoría tras 20 años.",
+  "Receta viral: la milanesa napolitana rompe internet.",
+  "Ola de calor: las heladerías no dan abasto.",
+  "Un gato 'predice' el resultado del partido del domingo.",
+  "Festival de música convoca a miles en la plaza central.",
+  "Encuentran una botella con un mensaje de hace 80 años.",
+  "Concurso de asadores bate el récord de comensales.",
+  "Tendencia: vuelven los jeans de los 90.",
+  "Un youtuber local llega al millón de suscriptores.",
+  "Maratón solidaria recauda fondos para el hospital.",
+  "Debate eterno: ¿feriado puente sí o no?",
+  "Se viene el eclipse: furor por los anteojos especiales.",
+  "Una panadería bate el récord de la factura más larga.",
+  "Tránsito complicado por los festejos en el centro.",
+  "Censo de palomas en la plaza desata la curiosidad vecinal.",
+  "Reabre el viejo cine del centro tras años cerrado.",
+];
+
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const fmtCount = (n) => {
+  n = Math.abs(Math.round(n));
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + " mil M";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + " M";
+  if (n >= 1e3) return (n / 1e3).toFixed(0) + " mil";
+  return "" + n;
+};
+
+// genera los titulares del mes según lo que realmente pasó
+function makeHeadlines(d) {
+  const heads = [];
+  const A = (t) => heads.push({ t, tag: "alert" });
+  const E = (t) => heads.push({ t, tag: "econ" });
+
+  if (d.gov < 30) A("Crece la presión política: peligra tu continuidad en el cargo.");
+  if (d.shockKey === "default") A(pick([
+    "DEFAULT: el país no paga su deuda y el peso se desploma.",
+    "Cesación de pagos: pánico en los mercados y corrida al dólar.",
+  ]));
+  else if (d.shockKey === "pandemic") A(pick([
+    "El sistema sanitario colapsa: suben los fallecimientos.",
+    "Cuarentenas estrictas: la actividad se frena y la población cae.",
+  ]));
+  else if (d.shockKey === "panic") A("Pánico financiero: corrida bancaria y fuga de depósitos.");
+  else if (d.shockName) E(`${d.shockEmoji} ${d.shockName} golpea la economía este mes.`);
+
+  if (d.infl > 10) A(pick([
+    "Hiperinflación: los precios cambian de un día para el otro.",
+    `Inflación del ${d.infl.toFixed(1)}% en el mes: nadie quiere pesos.`,
+  ]));
+  else if (d.infl > 3) E(pick([
+    `Inflación del ${d.infl.toFixed(1)}% en el mes: se acelera la suba de precios.`,
+    "Otro mes de inflación alta: el sueldo no alcanza en la góndola.",
+  ]));
+  else if (d.infl < -0.5) E("Caen los precios: crece el fantasma de la deflación.");
+
+  if (d.jobs < -d.lf * 0.003) A(pick([
+    `Cierran fábricas: se perdieron ${fmtCount(d.jobs)} empleos este mes.`,
+    `Ola de despidos en la industria: ${fmtCount(d.jobs)} puestos menos.`,
+  ]));
+  else if (d.jobs > d.lf * 0.003) E(pick([
+    `Boom de empleo: se crearon ${fmtCount(d.jobs)} puestos este mes.`,
+    `Las empresas contratan: ${fmtCount(d.jobs)} nuevos trabajos.`,
+  ]));
+
+  if (d.fxChg > 10) A(pick([
+    `El dólar se dispara ${d.fxChg.toFixed(0)}% en el mes.`,
+    "Corrida cambiaria: el dólar vuela y arrastra a los precios.",
+  ]));
+  else if (d.fxChg > 4) E(`El dólar oficial subió ${d.fxChg.toFixed(1)}% este mes.`);
+
+  if (d.brecha > 60) E(`La brecha con el dólar blue supera el ${d.brecha.toFixed(0)}%.`);
+  if (d.reserves < 1) A(pick([
+    "El banco central se queda casi sin reservas.",
+    "Reservas en mínimos: crece el temor a una devaluación brusca.",
+  ]));
+  if (d.shortage > 50) A(pick([
+    "Góndolas vacías: falta de productos básicos en los comercios.",
+    "Desabastecimiento: largas colas para conseguir alimentos.",
+  ]));
+  if (d.poverty > 40) E(`La pobreza ya alcanza al ${d.poverty.toFixed(0)}% de la población.`);
+  if (d.mig < -2) E(pick([
+    "Éxodo: miles de personas dejan el país cada mes.",
+    "Crece la emigración: se van sobre todo los jóvenes y profesionales.",
+  ]));
+  if (d.credibility < 25) E("Se derrumba la confianza en la moneda nacional.");
+  if (d.growth > 0.4 && d.unemp < 6) E(pick([
+    "La economía crece con fuerza y el consumo se dispara.",
+    "Auge: comercios y fábricas trabajan a pleno.",
+  ]));
+  else if (d.growth < -0.3) E("La actividad se contrae: crece el temor a la recesión.");
+  if (d.borrowed) E("El país toma un préstamo para reforzar las reservas.");
+  if (d.debt > 16) A("La deuda externa se vuelve impagable: alerta de default.");
+  if (d.trade > 0.06) E("Récord de exportaciones: entran divisas frescas.");
+  else if (d.trade < -0.06) E("Se dispara el déficit comercial: salen divisas.");
+
+  // priorizar lo importante y limitar a 3 titulares económicos
+  const econ = heads.slice(0, 3);
+  // siempre al menos un titular de relleno
+  const fluff = [{ t: pick(PAPER_FLUFF), tag: "fluff" }];
+  if (econ.length < 2) fluff.push({ t: pick(PAPER_FLUFF), tag: "fluff" });
+  return [...econ, ...fluff];
+}
+
 function classifyPhase(pace, growth, unemp, prevPhase) {
   if (pace > 0.10) return "HIPERINFLACION";          // >10%/mes
   if (pace > 0.035 && growth < -0.0005) return "ESTANFLACION";
@@ -196,6 +324,7 @@ function classifyPhase(pace, growth, unemp, prevPhase) {
 }
 
 function step(w) {
+  if (w.gameOver) return w;   // partida terminada: no avanza más
   const noise = () => (Math.random() - 0.5);
 
   // ---- shocks exógenos (eventos del mundo real) ----
@@ -205,11 +334,16 @@ function step(w) {
   if (shock) {
     shock = { ...shock, daysLeft: shock.daysLeft - 1 };
     if (shock.daysLeft <= 0) { shock = null; shockCooldown = 18 + Math.floor(Math.random() * 42); }
+  } else if (w.risk > 3500 && w.reserves < 1.0 && Math.random() < 0.07) {
+    // crisis de deuda / default endógeno: riesgo país disparado + sin reservas
+    const cfg = SHOCKS.default;
+    const total = Math.round(cfg.min + Math.random() * (cfg.max - cfg.min));
+    shock = { key: "default", daysLeft: total, total };
+    shockStarted = cfg;
   } else {
     shockCooldown = Math.max(0, shockCooldown - 1);
     if (shockCooldown === 0 && Math.random() < 0.025) {
-      const keys = Object.keys(SHOCKS);
-      const key = keys[Math.floor(Math.random() * keys.length)];
+      const key = RANDOM_SHOCKS[Math.floor(Math.random() * RANDOM_SHOCKS.length)];
       const cfg = SHOCKS[key];
       const total = Math.round(cfg.min + Math.random() * (cfg.max - cfg.min));
       shock = { key, daysLeft: total, total };
@@ -219,30 +353,42 @@ function step(w) {
   const sc = shock ? SHOCKS[shock.key] : null;
   const sActive = !!sc;
 
-  // ---- demografía: la población crece o cae por vegetativo + migración ----
+  // ---- demografía: la población crece o cae por vegetativo + migración + mortalidad por shock ----
   // en crisis (alto desempleo/pobreza, baja confianza) la gente emigra; en las buenas, llega
   const migAnnual = clamp(
     (w.confidence - 55) * 0.0005 - (w.unemployment - 7) * 0.0007 - Math.max(0, w.poverty - 35) * 0.0004,
     -0.05, 0.03
   );
-  const popGrowthM = w.natRate + migAnnual / 12;            // crecimiento poblacional mensual
+  const popShock = sActive && sc.popShock ? sc.popShock : 0;   // muertes por pandemia/hambruna (mensual)
+  // envejecimiento: la sociedad envejece lento (más rápido si es rica) → baja la natalidad
+  const medianAge = clamp(w.medianAge + 0.0025 + Math.max(0, w.gdpPerCapita - 12000) * 2e-8, 18, 52);
+  const effNatRate = w.natRate - Math.max(0, medianAge - 30) * 0.00002;  // sociedad vieja crece menos
+  const popGrowthM = effNatRate + migAnnual / 12 + popShock;    // crecimiento poblacional mensual
   const population = Math.max(1000, Math.round(w.population * (1 + popGrowthM)));
-  const laborForce = Math.round(population * w.participation);
-  const netMigration = migAnnual * 100;                    // % anual (para mostrar)
+  const netMigration = migAnnual * 100;                        // % anual (para mostrar)
 
-  // velocidad del dinero según tasa, confianza y encaje bancario
+  // fuga de cerebros + envejecimiento: la tasa de actividad de fondo baja con la edad media
+  const partTarget = clamp(0.55 - Math.max(0, medianAge - 30) * 0.006, 0.34, 0.58);
+  let participation = w.participation;
+  if (migAnnual < -0.015) participation -= 0.0005;             // emigración: se van los que trabajan
+  else participation += (partTarget - participation) * 0.0025;
+  participation = clamp(participation, 0.30, 0.6);
+  const laborForce = Math.round(population * participation);
+
+  // velocidad del dinero: tasa + confianza + encaje, y HUIDA DEL DINERO en inflación alta
   const encajeFactor = clamp(1 - (w.encaje - 10) * 0.012, 0.45, 1.25);
+  const flight = 1 + clamp((Math.abs(w.pace) - 0.02) * 8, 0, 2.2);   // >2%/mes: la gente se saca los pesos de encima
   const velocity = clamp(
-    10 * (1 + (3 - w.rate) * 0.04) * Math.pow(clamp(w.confidence / 70, 0.3, 1.5), 0.5) * encajeFactor,
-    2, 20
+    10 * (1 + (3 - w.rate) * 0.04) * Math.pow(clamp(w.confidence / 70, 0.3, 1.5), 0.5) * encajeFactor * flight,
+    2, 60
   );
 
   const demandMult = sActive && sc.demandMult ? sc.demandMult : 1;
   const AD = w.M * velocity;                       // demanda nominal
   const realDemand = (AD / w.priceLevel) * demandMult;
 
-  // potencial: productividad + más trabajadores (población) − riesgo país − aranceles + shock
-  const potGrowth = 0.0002 + popGrowthM * 0.85 - (w.risk - 450) * 2e-7 - Math.max(0, w.tariff - 15) * 4e-6 + (sActive ? sc.potG : 0);
+  // potencial: productividad + más trabajadores (población) − riesgo país − aranceles − informalidad − deuda + shock
+  const potGrowth = 0.0002 + popGrowthM * 0.85 - (w.risk - 450) * 2e-7 - Math.max(0, w.tariff - 15) * 4e-6 - Math.max(0, w.informal - 35) * 1e-5 - Math.max(0, w.debt - 8) * 2e-6 + (sActive ? sc.potG : 0);
   const potential = Math.max(10, w.potential * (1 + potGrowth));
   const gap = (realDemand - potential) / potential;
 
@@ -254,8 +400,18 @@ function step(w) {
   const fxGrowth = (w.fx - w.prevFx) / Math.max(w.prevFx, 0.0001);
   const fxPush = clamp(fxGrowth * 0.16, -0.01, 0.05);
 
-  // expectativas de inflación (inercia: corazón de la persistencia inflacionaria)
-  const infExpect = clamp(0.88 * w.infExpect + 0.12 * w.pace, -0.02, 0.4);
+  // credibilidad del banco central: se gana lento con estabilidad, se pierde rápido con inflación/default
+  let credibility = w.credibility;
+  const credHit = -Math.max(0, Math.abs(w.pace) - 0.005) * 500 - Math.max(0, mTrend) * 120
+    - Math.max(0, w.risk - 1200) * 0.01 - Math.max(0, w.debt - 10) * 0.4 - (sActive && shock.key === "default" ? 12 : 0);
+  if (credHit < 0) credibility += credHit * 0.05;
+  else credibility += (90 - credibility) * 0.012;
+  credibility = clamp(credibility, 3, 98);
+
+  // expectativas ancladas por la credibilidad: alta = estables; baja = se disparan con la inflación reciente
+  const adapt = clamp(0.08 + (1 - credibility / 100) * 0.3, 0.08, 0.38);
+  const anchorTarget = (1 - credibility / 100) * w.pace + (credibility / 100) * 0.0015;
+  const infExpect = clamp(w.infExpect + (anchorTarget - w.infExpect) * adapt, -0.02, 0.4);
 
   // inflación del período (expectativas + brecha + dinero + dólar + salarios + shock)
   const costPush = sActive ? sc.costPush : 0;
@@ -273,6 +429,7 @@ function step(w) {
   let unemployment = w.unemployment - 9 * (growth - 0.0002);
   unemployment += (5 - unemployment) * 0.02;
   unemployment += -(clamp(w.tariff, 0, 60) - 10) * 0.006;
+  unemployment -= Math.max(0, w.informal - 30) * 0.015;   // el trabajo informal baja el desempleo medido
   unemployment = clamp(unemployment, 1.5, 45);
 
   // confianza
@@ -321,19 +478,33 @@ function step(w) {
 
   let reserves = w.reserves + tradeBalance * 0.05 + (sActive && sc.resDelta ? sc.resDelta : 0)
     + (confidence > 60 ? 0.005 : -0.01) - (fxDefense > 0 ? 0.05 : 0) + (w.cepo ? 0.004 : 0);
-  reserves = clamp(reserves, 0, 24);
+  reserves = clamp(reserves, 0, 36);
   if (reserves <= 0.05) fxDefense = 0;               // sin reservas no se puede defender
 
   const riskTarget = clamp(
     300 + Math.max(0, pace - 0.004) * 6000 + Math.max(0, 5 - reserves) * 180
-      + (70 - confidence) * 12 + (sActive && sc.risk ? sc.risk : 0) + (w.cepo ? 250 : 0) + brecha * 4,
+      + (70 - confidence) * 12 + (sActive && sc.risk ? sc.risk : 0) + (w.cepo ? 250 : 0) + brecha * 4
+      + Math.max(0, w.debt - 4) * 55,                 // deuda alta → más riesgo país
     80, 6000
   );
   const risk = w.risk + (riskTarget - w.risk) * 0.1;
 
+  // deuda externa: crece con el interés (atado al riesgo país)
+  const debtRateAnnual = WORLD_RATE / 100 + risk / 10000;   // ej. riesgo 1500 → +15%/año
+  const debt = clamp(w.debt * (1 + debtRateAnnual / 12), 0, 1e7);
+  const borrowed = (w.debt - (w.prevDebt ?? w.debt)) > 0.3;  // ¿se pidió préstamo este mes?
+
   // desigualdad
   const giniTarget = clamp(36 + Math.max(0, pace - 0.004) * 320 + (unemployment - 5) * 0.4, 28, 66);
   const gini = w.gini + (giniTarget - w.gini) * 0.05;
+
+  // economía informal: el cepo, el control de precios, los aranceles y el desempleo empujan la actividad "en negro"
+  const informalTarget = clamp(
+    18 + (w.cepo ? 10 : 0) + (w.priceControl ? 9 : 0) + Math.max(0, w.tariff - 20) * 0.15
+      + Math.max(0, unemployment - 7) * 0.8 + Math.max(0, pace - 0.02) * 200,
+    10, 72
+  );
+  const informal = w.informal + (informalTarget - w.informal) * 0.04;
 
   // desabastecimiento por control de precios
   let shortage = w.shortage + (w.priceControl ? Math.max(0, pace) * 1400 + 0.6 : -2.5);
@@ -387,6 +558,59 @@ function step(w) {
     { day, infl: +(pace * 100).toFixed(2), gdp: +gdp.toFixed(1), unemp: +unemployment.toFixed(1), price: +priceLevel.toFixed(1), pp: +pp.toFixed(0), fx: +((fx / w.fxBase) * 100).toFixed(1), blue: +((fxBlue / w.fxBase) * 100).toFixed(1) },
   ].slice(-90);
 
+  // ---- diario: edición mensual con titulares según lo que realmente pasó ----
+  const employedNow = Math.round(laborForce * (1 - unemployment / 100));
+  const employedPrev = Math.round(w.laborForce * (1 - w.unemployment / 100));
+  const edition = {
+    day,
+    year: Math.floor((day - 1) / 12) + 1,
+    mes: ((day - 1) % 12) + 1,
+    items: makeHeadlines({
+      shockKey: sActive ? shock.key : null,
+      shockName: sActive ? sc.name : null,
+      shockEmoji: sActive ? sc.emoji : null,
+      infl: pace * 100,
+      jobs: employedNow - employedPrev,
+      lf: laborForce,
+      fxChg: ((fx - w.fx) / Math.max(w.fx, 1e-6)) * 100,
+      brecha,
+      reserves,
+      shortage,
+      poverty,
+      mig: netMigration,
+      credibility,
+      growth: ((gdp - w.gdp) / Math.max(w.gdp, 1)) * 100,
+      unemp: unemployment,
+      trade: tradeBalance,
+      borrowed,
+      debt,
+      gov: w.gov,
+    }),
+  };
+  const paper = [edition, ...w.paper].slice(0, 12);
+
+  // ---- gobernabilidad: se desgasta con las catástrofes; si llega a 0, te despiden ----
+  const crises = [];
+  if (sActive && shock.key === "default") crises.push([9, "El país cayó en default bajo tu gestión y te echaron del cargo."]);
+  if (pace > 0.15) crises.push([8, "La hiperinflación se descontroló por completo y te costó el puesto."]);
+  else if (pace > 0.08) crises.push([4, null]);
+  if (unrest > 85) crises.push([7, "Las protestas masivas y los saqueos forzaron tu renuncia."]);
+  else if (unrest > 70) crises.push([3, null]);
+  if (reserves < 0.4) crises.push([5, "Te quedaste sin reservas y sin plan para conseguirlas: te despidieron."]);
+  if (unemployment > 28) crises.push([5, "El desempleo masivo y la recesión te costaron el cargo."]);
+  else if (unemployment > 20) crises.push([2, null]);
+  if (poverty > 60) crises.push([4, "La pobreza extrema desató tu destitución."]);
+  if (debt > 20) crises.push([4, "La deuda externa impagable hundió al país y a tu gestión."]);
+  const drain = crises.reduce((s, c) => s + c[0], 0);
+  let gov = drain > 0 ? w.gov - drain : w.gov + 1.5;   // se recupera lento en la calma
+  gov = clamp(gov, 0, 100);
+  let gameOver = false, gameOverReason = null;
+  if (gov <= 0) {
+    gameOver = true;
+    const named = crises.filter((c) => c[1]).sort((a, b) => b[0] - a[0]);
+    gameOverReason = named.length ? named[0][1] : "El desastre económico te costó el cargo.";
+  }
+
   // acumulación del mes en curso
   let acc = {
     unempSum: w.acc.unempSum + unemployment,
@@ -430,6 +654,7 @@ function step(w) {
       avgConf: acc.confSum / acc.count,
       avgPov: acc.povSum / acc.count,
       rate: w.rate, fxRate: fx, fxBlue, brecha, reserves, risk, gini, shortage, encaje: w.encaje, tariff: w.tariff, tradeBalance, cepo: w.cepo, priceControl: w.priceControl,
+      credibility, informal, medianAge, debt,
       priceLevel, pp, nominalGDP,
       baseMoney: w.M * w.scaleMoney,
       employed, unemployed,
@@ -445,9 +670,10 @@ function step(w) {
   return {
     ...w, day, prevM: w.M, mTrend, priceLevel, potential, gdp, prevGdp: w.gdp,
     unemployment, confidence, wage, prevWage: w.wage, pace, infExpect, velocity, products, phase, prevPhase: w.phase,
-    fx, prevFx: w.fx, fxBlue, prevFxBlue: w.fxBlue, reserves, risk, fxDefense, poverty, gini, unrest, shortage, tradeBalance,
-    population, laborForce, netMigration,
-    shock, shockCooldown, history, news, flash: null, acc, reports, monthStart,
+    fx, prevFx: w.fx, fxBlue, prevFxBlue: w.fxBlue, reserves, risk, fxDefense, poverty, gini, unrest, shortage, tradeBalance, debt, prevDebt: w.debt,
+    population, laborForce, netMigration, participation, popGrowthAnnual: popGrowthM * 12 * 100,
+    credibility, informal, medianAge, gov, gameOver, gameOverReason,
+    shock, shockCooldown, history, news, paper, flash: null, acc, reports, monthStart,
   };
 }
 
@@ -475,6 +701,8 @@ export default function App() {
     return () => clearInterval(id);
   }, [running, speedIdx]);
 
+  useEffect(() => { if (w.gameOver) setRunning(false); }, [w.gameOver]);
+
   const doFlash = (kind) => {
     setFlash(kind);
     clearTimeout(flashTimer.current);
@@ -498,6 +726,11 @@ export default function App() {
   };
   const toggleCepo = () => setW((p) => ({ ...p, cepo: !p.cepo }));
   const togglePC = () => setW((p) => ({ ...p, priceControl: !p.priceControl }));
+  const borrow = (m) => { setW((p) => ({ ...p, reserves: clamp(p.reserves + m, 0, 36), debt: p.debt + m })); doFlash("emit"); };
+  const repay = (m) => {
+    setW((p) => { const pay = Math.min(m, p.reserves, p.debt); return { ...p, reserves: p.reserves - pay, debt: Math.max(0, p.debt - pay) }; });
+    doFlash("contract");
+  };
   const reset = () => { setW(initWorld()); setRunning(false); };
 
   const phase = PHASES[w.phase];
@@ -516,7 +749,7 @@ export default function App() {
   const employed = Math.round(w.laborForce * (1 - w.unemployment / 100));
   const unemployed = w.laborForce - employed;
   const gdpPerCap = nominalGDP / Math.max(w.population, 1);
-  const popGrowthAnnual = w.natRate * 12 * 100 + w.netMigration;
+  const popGrowthAnnual = w.popGrowthAnnual ?? (w.natRate * 12 * 100 + w.netMigration);
   const fxChgPct = ((w.fx - w.prevFx) / Math.max(w.prevFx, 1e-6)) * 100;
   const brechaPct = (w.fxBlue / Math.max(w.fx, 0.01) - 1) * 100;
   // inflación anualizada (variación de precios de los últimos 12 meses)
@@ -640,6 +873,8 @@ export default function App() {
             sub={`brecha ${fmt(brechaPct, 0)}%`} />
           <Stat label="Reservas" value={`${fmt(w.reserves, 1)}`}
             tone={w.reserves < 2 ? "bad" : w.reserves > 8 ? "good" : "neutral"} sub="meses de importaciones" />
+          <Stat label="Deuda externa" value={`${fmt(w.debt, 1)}`}
+            tone={w.debt > 12 ? "bad" : w.debt < 4 ? "good" : "neutral"} sub={`${fmt(WORLD_RATE + w.risk / 100, 1)}%/año interés`} />
           <Stat label="Riesgo país" value={`${fmtInt(w.risk)}`}
             tone={w.risk > 1500 ? "bad" : w.risk < 500 ? "good" : "neutral"} sub="puntos básicos" />
           <Stat label="Pobreza" value={`${fmt(w.poverty, 1)}%`}
@@ -653,6 +888,14 @@ export default function App() {
         <section style={S.macroGrid}>
           <Stat label="Encaje bancario" value={`${fmt(w.encaje, 0)}%`} tone="neutral" sub="reservas obligatorias" />
           <Stat label="PIB per cápita" value={fmtMoney(gdpPerCap)} tone="neutral" sub="riqueza por persona" />
+          <Stat label="Credibilidad BC" value={`${fmt(w.credibility, 0)}`}
+            tone={w.credibility > 65 ? "good" : w.credibility < 35 ? "bad" : "neutral"} sub="ancla expectativas" />
+          <Stat label="Economía informal" value={`${fmt(w.informal, 0)}%`}
+            tone={w.informal > 45 ? "bad" : w.informal < 25 ? "good" : "neutral"} sub="actividad en negro" />
+          <Stat label="Gobernabilidad" value={`${fmt(w.gov, 0)}`}
+            tone={w.gov < 30 ? "bad" : w.gov > 70 ? "good" : "neutral"} sub="tu continuidad en el cargo" />
+          <Stat label="Edad media" value={`${fmt(w.medianAge, 0)}`}
+            tone={w.medianAge > 45 ? "bad" : "neutral"} sub="años · envejecimiento" />
           <Stat label="Población (var.)" value={`${popGrowthAnnual >= 0 ? "+" : ""}${fmt(popGrowthAnnual, 2)}%`}
             tone={popGrowthAnnual > 0.3 ? "good" : popGrowthAnnual < -0.5 ? "bad" : "neutral"}
             sub={`migración ${w.netMigration >= 0 ? "+" : ""}${fmt(w.netMigration, 1)}%/año`} />
@@ -701,6 +944,8 @@ export default function App() {
             hint={w.reserves < 0.3 ? "⚠️ sin reservas" : `baja el dólar · gasta reservas (${fmt(w.reserves, 1)})`}
             placeholder="ej. 7" suffix="% baja" onApply={(n) => intervene(n)} btnStyle={S.fxBtn}
             disabled={w.reserves < 0.3} presets={[["3%", 3], ["7%", 7], ["15%", 15]]} />
+
+          <DebtCard debt={w.debt} rateAnnual={WORLD_RATE + w.risk / 100} onBorrow={borrow} onRepay={repay} fmt={fmt} />
 
           <div style={S.ctrlCol}>
             <div style={S.ctrlHead}><span style={{ color: "#ff8a6a" }}>⛓</span> MEDIDAS DE EMERGENCIA <span style={S.ctrlHint}>distorsionan la economía</span></div>
@@ -796,6 +1041,36 @@ export default function App() {
           </div>
         </section>
 
+        {/* ===== DIARIO ===== */}
+        <section style={S.paperSection}>
+          <div style={S.paperMast}>
+            <div>
+              <div style={S.paperName}>{w.paperName}</div>
+              <div style={S.paperTagline}>Edición mensual · noticias del país</div>
+            </div>
+            <div style={S.paperDate}>Año {year} · {MESES[mes]}</div>
+          </div>
+          {w.paper.length === 0 ? (
+            <div style={S.paperEmpty}>Avanzá los meses para leer las noticias de cada edición…</div>
+          ) : (
+            <div style={S.paperList}>
+              {w.paper.map((ed, i) => (
+                <div key={ed.day} style={{ ...S.paperEd, ...(i === 0 ? S.paperEdLatest : {}) }}>
+                  <div style={S.paperEdDate}>AÑO {ed.year} · MES {ed.mes}</div>
+                  <div style={S.paperHeads}>
+                    {ed.items.map((it, j) => (
+                      <div key={j} style={{ ...S.paperHead, ...(it.tag === "alert" ? S.paperAlert : it.tag === "fluff" ? S.paperFluff : {}) }}>
+                        <span style={S.paperBullet}>{it.tag === "alert" ? "⚠️" : it.tag === "fluff" ? "•" : "▸"}</span>
+                        <span>{it.t}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
         {/* ===== INFORME ANUAL ===== */}
         <section style={{ marginBottom: 22 }}>
           <div style={S.secTitle}>
@@ -835,6 +1110,10 @@ export default function App() {
                         sub={(r.netMigration ?? 0) >= 0 ? "llega gente" : "emigración"}
                         color={(r.netMigration ?? 0) >= 0 ? "#4dd68a" : "#ff8a3d"} />
                       <RInfo label="PIB per cápita" value={fmtMoney(r.gdpPerCap ?? 0)} sub="por persona" />
+                      <RInfo label="Credibilidad BC" value={`${fmt(r.credibility ?? 0, 0)}`}
+                        color={(r.credibility ?? 0) > 65 ? "#4dd68a" : (r.credibility ?? 0) < 35 ? "#ff4d4d" : "#e8e4d8"} sub="expectativas" />
+                      <RInfo label="Econ. informal" value={`${fmt(r.informal ?? 0, 0)}%`}
+                        color={(r.informal ?? 0) > 45 ? "#ff4d4d" : "#e8e4d8"} sub="en negro" />
                       <RInfo label="Salarios" value={`${r.monthWage >= 0 ? "+" : ""}${fmt(r.monthWage, 1)}%`}
                         sub={`real ${r.realWageChg >= 0 ? "+" : ""}${fmt(r.realWageChg, 1)}%`}
                         color={r.realWageChg >= 0 ? "#4dd68a" : "#ff8a3d"} />
@@ -847,6 +1126,8 @@ export default function App() {
                         sub={r.cepo ? "con cepo" : "sin cepo"} />
                       <RInfo label="Reservas" value={`${fmt(r.reserves, 1)}`} sub="meses import."
                         color={r.reserves < 2 ? "#ff4d4d" : r.reserves > 8 ? "#4dd68a" : "#e8e4d8"} />
+                      <RInfo label="Deuda externa" value={`${fmt(r.debt ?? 0, 1)}`} sub="meses import."
+                        color={(r.debt ?? 0) > 12 ? "#ff4d4d" : (r.debt ?? 0) < 4 ? "#4dd68a" : "#e8e4d8"} />
                       <RInfo label="Riesgo país" value={`${fmtInt(r.risk)}`} sub="pb"
                         color={r.risk > 1500 ? "#ff4d4d" : r.risk < 500 ? "#4dd68a" : "#e8e4d8"} />
                       <RInfo label="Desabastec." value={`${fmt(r.shortage ?? 0, 0)}`}
@@ -924,6 +1205,26 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* ===== FIN DE JUEGO: DESPEDIDO ===== */}
+      {w.gameOver && (
+        <div style={S.intro}>
+          <div style={{ ...S.introCard, borderColor: "#ff4d4d" }}>
+            <div style={{ ...S.kicker, color: "#ff4d4d" }}>FIN DE LA GESTIÓN</div>
+            <h2 style={{ ...S.introTitle, color: "#ff6b6b" }}>Fuiste despedido</h2>
+            <p style={S.introText}>{w.gameOverReason}</p>
+            <div style={S.goStats}>
+              <div style={S.goStat}><span style={S.goLabel}>En el cargo</span><span style={S.goVal}>{Math.floor(w.day / 12)} años {w.day % 12} meses</span></div>
+              <div style={S.goStat}><span style={S.goLabel}>Inflación anual final</span><span style={S.goVal}>{fmtPct(annualInfl)}</span></div>
+              <div style={S.goStat}><span style={S.goLabel}>Desempleo final</span><span style={S.goVal}>{fmt(w.unemployment, 1)}%</span></div>
+              <div style={S.goStat}><span style={S.goLabel}>Pobreza final</span><span style={S.goVal}>{fmt(w.poverty, 0)}%</span></div>
+              <div style={S.goStat}><span style={S.goLabel}>Última fase</span><span style={S.goVal}>{phase.label}</span></div>
+              <div style={S.goStat}><span style={S.goLabel}>Población final</span><span style={S.goVal}>{fmtPop(w.population)}</span></div>
+            </div>
+            <button style={{ ...S.introBtn, background: "#ff4d4d", color: "#fff" }} onClick={reset}>↻ Asumir un nuevo país</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -945,6 +1246,29 @@ function RInfo({ label, value, sub, color }) {
       <div style={S.rLabel}>{label}</div>
       <div style={{ ...S.rValue, color: color || "#e8e4d8" }}>{value}</div>
       {sub && <div style={S.rSub}>{sub}</div>}
+    </div>
+  );
+}
+
+function DebtCard({ debt, rateAnnual, onBorrow, onRepay, fmt }) {
+  const [val, setVal] = useState("");
+  const apply = () => { const n = parseFloat(String(val).replace(",", ".")); if (!isNaN(n) && n > 0) { onBorrow(n); setVal(""); } };
+  return (
+    <div style={S.ctrlCol}>
+      <div style={S.ctrlHead}><span style={{ color: "#e08aa0" }}>🏛</span> DEUDA EXTERNA <span style={S.ctrlHint}>{`debés ${fmt(debt, 1)} · ${fmt(rateAnnual, 1)}%/año`}</span></div>
+      <div style={S.inputRow}>
+        <input style={S.numInput} value={val} inputMode="decimal" placeholder="ej. 5"
+          onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") apply(); }} />
+        <span style={S.suffix}>meses</span>
+        <button style={{ ...S.applyBtn, color: "#e08aa0", borderColor: "#e08aa0" }} onClick={apply}>Pedir</button>
+      </div>
+      <div style={S.presetRow}>
+        <button style={{ ...S.actBtn, ...S.debtBtn }} onClick={() => onBorrow(2)}>+2</button>
+        <button style={{ ...S.actBtn, ...S.debtBtn }} onClick={() => onBorrow(5)}>+5</button>
+        <button style={{ ...S.actBtn, ...S.debtBtn }} onClick={() => onBorrow(10)}>+10</button>
+        <button style={{ ...S.actBtn, ...S.repayBtn, ...(debt < 0.1 ? S.btnDisabled : {}) }} onClick={() => onRepay(3)} disabled={debt < 0.1}>Pagar 3</button>
+      </div>
+      <div style={S.ctrlFoot}>Suma reservas al instante, pero la deuda crece con el riesgo país. Endeudarte de más dispara el riesgo y puede llevar al default.</div>
     </div>
   );
 }
@@ -1056,6 +1380,8 @@ const S = {
   tariffBtn: { color: "#7dd3a0", background: "rgba(125,211,160,.08)", borderColor: "rgba(125,211,160,.3)", fontSize: 12 },
   wageBtn: { color: "#ffd166", background: "rgba(255,209,102,.08)", borderColor: "rgba(255,209,102,.3)", fontSize: 12 },
   fxBtn: { color: "#56c4d8", background: "rgba(86,196,216,.08)", borderColor: "rgba(86,196,216,.3)", fontSize: 13 },
+  debtBtn: { color: "#e08aa0", background: "rgba(224,138,160,.08)", borderColor: "rgba(224,138,160,.3)", fontSize: 12 },
+  repayBtn: { color: "#7dd3a0", background: "rgba(125,211,160,.08)", borderColor: "rgba(125,211,160,.3)", fontSize: 11.5 },
   btnDisabled: { opacity: 0.4, cursor: "not-allowed", filter: "grayscale(0.6)" },
   ctrlFoot: { fontSize: 10.5, color: "#646a78", marginTop: 10, lineHeight: 1.4 },
   inputRow: { display: "flex", gap: 6, alignItems: "center", marginBottom: 9 },
@@ -1083,6 +1409,21 @@ const S = {
   newsDay: { fontWeight: 600, flexShrink: 0 },
 
   ppBar: { display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", padding: "14px 18px", background: "linear-gradient(90deg,#12151d,#0e1118)", border: "1px solid #20242f", borderRadius: 12, marginBottom: 22 },
+  paperSection: { marginBottom: 22, padding: "0 0 4px", background: "#13110c", border: "1px solid #2a2620", borderRadius: 12, overflow: "hidden" },
+  paperMast: { display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12, padding: "16px 20px 12px", borderBottom: "2px solid #3a342a", background: "linear-gradient(180deg,#1a160f,#13110c)" },
+  paperName: { fontFamily: "'Instrument Serif', serif", fontSize: 34, lineHeight: 1, color: "#f3ead2", letterSpacing: 0.5 },
+  paperTagline: { fontSize: 11, color: "#9a8f78", marginTop: 4, fontStyle: "italic" },
+  paperDate: { fontSize: 11, color: "#9a8f78", letterSpacing: 1, whiteSpace: "nowrap" },
+  paperEmpty: { padding: "18px 20px", fontSize: 13, color: "#8a8270" },
+  paperList: { display: "flex", flexDirection: "column", maxHeight: 360, overflowY: "auto" },
+  paperEd: { padding: "12px 20px", borderBottom: "1px solid #221e17" },
+  paperEdLatest: { background: "rgba(245,166,35,.05)" },
+  paperEdDate: { fontSize: 9.5, letterSpacing: 1.5, color: "#8a7d62", marginBottom: 7, textTransform: "uppercase" },
+  paperHeads: { display: "flex", flexDirection: "column", gap: 6 },
+  paperHead: { display: "flex", gap: 8, fontSize: 13.5, color: "#e4dcc8", lineHeight: 1.4, fontFamily: "'Instrument Serif', serif" },
+  paperBullet: { flexShrink: 0, fontSize: 12 },
+  paperAlert: { color: "#ff9d6e", fontWeight: 400 },
+  paperFluff: { color: "#7d7460", fontStyle: "italic", fontSize: 12.5 },
   ppItem: { display: "flex", flexDirection: "column" },
   ppLabel: { fontSize: 10, letterSpacing: 1, color: "#7c8294", textTransform: "uppercase" },
   ppVal: { fontFamily: "'Instrument Serif', serif", fontSize: 26, color: "#f3ead2" },
@@ -1123,4 +1464,8 @@ const S = {
   introList: { fontSize: 13, color: "#aab0bd", lineHeight: 1.9, paddingLeft: 18, margin: "0 0 14px" },
   introHint: { fontSize: 12, color: "#7c8294", marginBottom: 20 },
   introBtn: { width: "100%", padding: "14px", fontSize: 15, fontWeight: 600, color: "#0a0c11", background: "#f5a623", border: "none", borderRadius: 11 },
+  goStats: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, margin: "16px 0 20px" },
+  goStat: { display: "flex", flexDirection: "column", padding: "8px 10px", background: "#0e1118", border: "1px solid #2a2f3d", borderRadius: 9 },
+  goLabel: { fontSize: 10, letterSpacing: 0.5, color: "#7c8294", textTransform: "uppercase" },
+  goVal: { fontFamily: "'Instrument Serif', serif", fontSize: 19, color: "#f3ead2", marginTop: 2 },
 };
