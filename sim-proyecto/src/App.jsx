@@ -54,6 +54,7 @@ function initWorld() {
   const baseM = baseNominalGDP * m2Ratio;                 // base monetaria realista
   const participation = 0.46 + Math.random() * 0.12;      // tasa de actividad (46%–58%)
   const laborForce = Math.round(population * participation);
+  const natAnnual = -0.004 + Math.random() * 0.022;       // crecimiento vegetativo anual (-0,4% a +1,8%)
   const fxBase = Math.round((0.5 + Math.random() * 1200) * 100) / 100; // cotización inicial del dólar
 
   return {
@@ -102,10 +103,11 @@ function initWorld() {
     shockCooldown: 24,
     // --- escala realista (solo para mostrar cifras creíbles) ---
     population, gdpPerCapita, m2Ratio, baseNominalGDP, baseM, laborForce,
+    participation, natRate: natAnnual / 12, netMigration: 0,   // demografía
     scaleMoney: baseM / 1000,            // M interno 1000 → base monetaria realista
     // --- informe mensual ---
     reports: [],
-    monthStart: { day: 0, priceLevel: 100, gdp: 100, M: 1000, wage: 1800, fx: fxBase },
+    monthStart: { day: 0, priceLevel: 100, gdp: 100, M: 1000, wage: 1800, fx: fxBase, pop: population },
     acc: { unempSum: 0, inflSum: 0, count: 0, phaseTally: {}, confSum: 0, povSum: 0 },
   };
 }
@@ -217,6 +219,17 @@ function step(w) {
   const sc = shock ? SHOCKS[shock.key] : null;
   const sActive = !!sc;
 
+  // ---- demografía: la población crece o cae por vegetativo + migración ----
+  // en crisis (alto desempleo/pobreza, baja confianza) la gente emigra; en las buenas, llega
+  const migAnnual = clamp(
+    (w.confidence - 55) * 0.0005 - (w.unemployment - 7) * 0.0007 - Math.max(0, w.poverty - 35) * 0.0004,
+    -0.05, 0.03
+  );
+  const popGrowthM = w.natRate + migAnnual / 12;            // crecimiento poblacional mensual
+  const population = Math.max(1000, Math.round(w.population * (1 + popGrowthM)));
+  const laborForce = Math.round(population * w.participation);
+  const netMigration = migAnnual * 100;                    // % anual (para mostrar)
+
   // velocidad del dinero según tasa, confianza y encaje bancario
   const encajeFactor = clamp(1 - (w.encaje - 10) * 0.012, 0.45, 1.25);
   const velocity = clamp(
@@ -228,8 +241,8 @@ function step(w) {
   const AD = w.M * velocity;                       // demanda nominal
   const realDemand = (AD / w.priceLevel) * demandMult;
 
-  // potencial: tendencia + freno por riesgo país + aranceles + efecto del shock
-  const potGrowth = 0.0002 - (w.risk - 450) * 2e-7 - Math.max(0, w.tariff - 15) * 4e-6 + (sActive ? sc.potG : 0);
+  // potencial: productividad + más trabajadores (población) − riesgo país − aranceles + shock
+  const potGrowth = 0.0002 + popGrowthM * 0.85 - (w.risk - 450) * 2e-7 - Math.max(0, w.tariff - 15) * 4e-6 + (sActive ? sc.potG : 0);
   const potential = Math.max(10, w.potential * (1 + potGrowth));
   const gap = (realDemand - potential) / potential;
 
@@ -259,7 +272,7 @@ function step(w) {
   // desempleo (ley de Okun + reversión al natural + protección por aranceles)
   let unemployment = w.unemployment - 9 * (growth - 0.0002);
   unemployment += (5 - unemployment) * 0.02;
-  unemployment += -(w.tariff - 10) * 0.006;
+  unemployment += -(clamp(w.tariff, 0, 60) - 10) * 0.006;
   unemployment = clamp(unemployment, 1.5, 45);
 
   // confianza
@@ -394,10 +407,12 @@ function step(w) {
     const monthM = (w.M / monthStart.M - 1) * 100;
     const monthWage = (wage / monthStart.wage - 1) * 100;
     const monthFx = (fx / monthStart.fx - 1) * 100;
-    const employed = Math.round(w.laborForce * (1 - unemployment / 100));
-    const unemployed = w.laborForce - employed;
+    const employed = Math.round(laborForce * (1 - unemployment / 100));
+    const unemployed = laborForce - employed;
     const nominalGDP = (gdp / 100) * (priceLevel / 100) * w.baseNominalGDP;
     const realWageChg = monthWage - monthInfl;
+    const popChange = (population / monthStart.pop - 1) * 100;   // variación anual de población
+    const gdpPerCap = nominalGDP / Math.max(population, 1);
     const verdict =
       monthInfl > 150 ? "🔴 Inflación fuera de control: la moneda se desploma." :
       monthFx > 80 ? "🔴 Corrida cambiaria: el dólar se disparó este año." :
@@ -418,11 +433,12 @@ function step(w) {
       priceLevel, pp, nominalGDP,
       baseMoney: w.M * w.scaleMoney,
       employed, unemployed,
+      population, popChange, netMigration, gdpPerCap,
       domPhase: dom,
       verdict,
     };
     reports = [report, ...w.reports].slice(0, 30);
-    monthStart = { day, priceLevel, gdp, M: w.M, wage, fx };
+    monthStart = { day, priceLevel, gdp, M: w.M, wage, fx, pop: population };
     acc = { unempSum: 0, inflSum: 0, confSum: 0, povSum: 0, count: 0, phaseTally: {} };
   }
 
@@ -430,6 +446,7 @@ function step(w) {
     ...w, day, prevM: w.M, mTrend, priceLevel, potential, gdp, prevGdp: w.gdp,
     unemployment, confidence, wage, prevWage: w.wage, pace, infExpect, velocity, products, phase, prevPhase: w.phase,
     fx, prevFx: w.fx, fxBlue, prevFxBlue: w.fxBlue, reserves, risk, fxDefense, poverty, gini, unrest, shortage, tradeBalance,
+    population, laborForce, netMigration,
     shock, shockCooldown, history, news, flash: null, acc, reports, monthStart,
   };
 }
@@ -465,10 +482,10 @@ export default function App() {
   };
 
   const emit = (pct) => { setW((p) => ({ ...p, M: clamp(p.M * (1 + pct / 100), 1, 1e11) })); doFlash("emit"); };
-  const contract = (pct) => { setW((p) => ({ ...p, M: clamp(p.M * (1 - pct / 100), 1, 1e11) })); doFlash("contract"); };
-  const setRate = (v) => setW((p) => ({ ...p, rate: clamp(+(+v).toFixed(2), 0, 120) }));
-  const setEncaje = (v) => setW((p) => ({ ...p, encaje: clamp(+(+v).toFixed(1), 0, 80) }));
-  const setTariff = (v) => setW((p) => ({ ...p, tariff: clamp(+(+v).toFixed(1), 0, 80) }));
+  const contract = (pct) => { setW((p) => ({ ...p, M: clamp(p.M * (1 - clamp(pct, 0, 99) / 100), 1, 1e11) })); doFlash("contract"); };
+  const setRate = (v) => setW((p) => ({ ...p, rate: clamp(+(+v).toFixed(2), 0, 1000) }));
+  const setEncaje = (v) => setW((p) => ({ ...p, encaje: clamp(+(+v).toFixed(2), 0, 100) }));
+  const setTariff = (v) => setW((p) => ({ ...p, tariff: clamp(+(+v).toFixed(2), 0, 400) }));
   const decreeWage = (pct) => { setW((p) => ({ ...p, wage: p.wage * (1 + pct / 100) })); doFlash("emit"); };
   const intervene = (pct) => {
     setW((p) => {
@@ -498,6 +515,8 @@ export default function App() {
   const nominalGDP = (w.gdp / 100) * (w.priceLevel / 100) * w.baseNominalGDP;
   const employed = Math.round(w.laborForce * (1 - w.unemployment / 100));
   const unemployed = w.laborForce - employed;
+  const gdpPerCap = nominalGDP / Math.max(w.population, 1);
+  const popGrowthAnnual = w.natRate * 12 * 100 + w.netMigration;
   const fxChgPct = ((w.fx - w.prevFx) / Math.max(w.prevFx, 1e-6)) * 100;
   const brechaPct = (w.fxBlue / Math.max(w.fx, 0.01) - 1) * 100;
   // inflación anualizada (variación de precios de los últimos 12 meses)
@@ -633,6 +652,10 @@ export default function App() {
         {/* ===== INDICADORES SECUNDARIOS ===== */}
         <section style={S.macroGrid}>
           <Stat label="Encaje bancario" value={`${fmt(w.encaje, 0)}%`} tone="neutral" sub="reservas obligatorias" />
+          <Stat label="PIB per cápita" value={fmtMoney(gdpPerCap)} tone="neutral" sub="riqueza por persona" />
+          <Stat label="Población (var.)" value={`${popGrowthAnnual >= 0 ? "+" : ""}${fmt(popGrowthAnnual, 2)}%`}
+            tone={popGrowthAnnual > 0.3 ? "good" : popGrowthAnnual < -0.5 ? "bad" : "neutral"}
+            sub={`migración ${w.netMigration >= 0 ? "+" : ""}${fmt(w.netMigration, 1)}%/año`} />
           <Stat label="Aranceles" value={`${fmt(w.tariff, 0)}%`} tone="neutral" sub="a las importaciones" />
           <Stat label="Balanza comercial" value={`${w.tradeBalance >= 0 ? "+" : ""}${fmt(w.tradeBalance * 100, 0)}`}
             tone={w.tradeBalance > 0.03 ? "good" : w.tradeBalance < -0.03 ? "bad" : "neutral"}
@@ -660,7 +683,7 @@ export default function App() {
 
           <Lever accent="#f5a623" title="TASA DE INTERÉS" icon="％" hint={`actual ${fmt(w.rate, 2)}% · escribí la nueva`}
             placeholder={`${fmt(w.rate, 1)}`} suffix="% objetivo" onApply={(n) => setRate(n)} btnStyle={S.rateBtn} mode="set"
-            presets={[["0%", 0], ["5%", 5], ["15%", 15], ["40%", 40], ["80%", 80]]} />
+            presets={[["0%", 0], ["5%", 5], ["15%", 15], ["40%", 40], ["80%", 80], ["150%", 150]]} />
 
           <Lever accent="#c8a8ff" title="ENCAJE BANCARIO" icon="🏦" hint={`actual ${fmt(w.encaje, 0)}% · frena el crédito`}
             placeholder={`${fmt(w.encaje, 0)}`} suffix="%" onApply={(n) => setEncaje(n)} btnStyle={S.encajeBtn} mode="set"
@@ -668,7 +691,7 @@ export default function App() {
 
           <Lever accent="#7dd3a0" title="ARANCELES" icon="🚢" hint={`actual ${fmt(w.tariff, 0)}% · a las importaciones`}
             placeholder={`${fmt(w.tariff, 0)}`} suffix="%" onApply={(n) => setTariff(n)} btnStyle={S.tariffBtn} mode="set"
-            presets={[["0%", 0], ["10%", 10], ["25%", 25], ["50%", 50]]} />
+            presets={[["0%", 0], ["10%", 10], ["25%", 25], ["50%", 50], ["100%", 100]]} />
 
           <Lever accent="#ffd166" title="SALARIO MÍNIMO" icon="👷" hint="suba por decreto · cuidado con la espiral"
             placeholder="ej. 10" suffix="% suba" onApply={(n) => decreeWage(n)} btnStyle={S.wageBtn}
@@ -805,6 +828,13 @@ export default function App() {
                       <RInfo label="Desempleo prom." value={`${fmt(r.avgUnemp, 1)}%`}
                         color={r.avgUnemp > 9 ? "#ff4d4d" : r.avgUnemp < 4 ? "#4dd68a" : "#e8e4d8"} />
                       <RInfo label="Ocupados / Sin empleo" value={`${fmtPop(r.employed)}`} sub={`${fmtPop(r.unemployed)} sin trabajo`} />
+                      <RInfo label="Población" value={fmtPop(r.population ?? 0)}
+                        sub={`${(r.popChange ?? 0) >= 0 ? "+" : ""}${fmt(r.popChange ?? 0, 2)}% año`}
+                        color={(r.popChange ?? 0) > 0 ? "#4dd68a" : (r.popChange ?? 0) < -0.5 ? "#ff4d4d" : "#e8e4d8"} />
+                      <RInfo label="Migración neta" value={`${(r.netMigration ?? 0) >= 0 ? "+" : ""}${fmt(r.netMigration ?? 0, 1)}%`}
+                        sub={(r.netMigration ?? 0) >= 0 ? "llega gente" : "emigración"}
+                        color={(r.netMigration ?? 0) >= 0 ? "#4dd68a" : "#ff8a3d"} />
+                      <RInfo label="PIB per cápita" value={fmtMoney(r.gdpPerCap ?? 0)} sub="por persona" />
                       <RInfo label="Salarios" value={`${r.monthWage >= 0 ? "+" : ""}${fmt(r.monthWage, 1)}%`}
                         sub={`real ${r.realWageChg >= 0 ? "+" : ""}${fmt(r.realWageChg, 1)}%`}
                         color={r.realWageChg >= 0 ? "#4dd68a" : "#ff8a3d"} />
@@ -888,7 +918,7 @@ export default function App() {
               <li><b>Buscás el punto justo</b> → equilibrio y pleno empleo.</li>
             </ul>
             <p style={S.introHint}>
-              Vas a enfrentar <b style={{ color: "#56c4d8" }}>shocks reales</b> (crisis petrolera, sequías, pánico financiero, pandemias…), un <b style={{ color: "#56c4d8" }}>dólar</b> que se devalúa, reservas, riesgo país y pobreza. Cada 5 s pasa un mes y al cierre de cada año tenés un informe completo.
+              Vas a enfrentar <b style={{ color: "#56c4d8" }}>shocks reales</b> (crisis petrolera, sequías, pánico financiero, pandemias…), un <b style={{ color: "#56c4d8" }}>dólar</b> que se devalúa, reservas, riesgo país y pobreza. La <b style={{ color: "#56c4d8" }}>población</b> crece o emigra según cómo manejes el país. Cada 5 s pasa un mes y al cierre de cada año tenés un informe completo.
             </p>
             <button style={S.introBtn} onClick={() => { setStarted(true); setRunning(true); }}>▶ Iniciar simulación</button>
           </div>
