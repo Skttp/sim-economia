@@ -377,10 +377,10 @@ function step(w) {
 
   // velocidad del dinero: tasa + confianza + encaje, y HUIDA DEL DINERO en inflación alta
   const encajeFactor = clamp(1 - (w.encaje - 10) * 0.012, 0.45, 1.25);
-  const flight = 1 + clamp((Math.abs(w.pace) - 0.02) * 8, 0, 2.2);   // >2%/mes: la gente se saca los pesos de encima
+  const flight = 1 + clamp((Math.abs(w.pace) - 0.02) * 8, 0, 6);   // >2%/mes: la gente se saca los pesos de encima
   const velocity = clamp(
     10 * (1 + (3 - w.rate) * 0.04) * Math.pow(clamp(w.confidence / 70, 0.3, 1.5), 0.5) * encajeFactor * flight,
-    2, 60
+    2, 150
   );
 
   const demandMult = sActive && sc.demandMult ? sc.demandMult : 1;
@@ -398,7 +398,7 @@ function step(w) {
 
   // pasaje a precios de la devaluación reciente
   const fxGrowth = (w.fx - w.prevFx) / Math.max(w.prevFx, 0.0001);
-  const fxPush = clamp(fxGrowth * 0.16, -0.01, 0.05);
+  const fxPush = clamp(fxGrowth * 0.16, -0.05, 0.4);
 
   // credibilidad del banco central: se gana lento con estabilidad, se pierde rápido con inflación/default
   let credibility = w.credibility;
@@ -411,14 +411,14 @@ function step(w) {
   // expectativas ancladas por la credibilidad: alta = estables; baja = se disparan con la inflación reciente
   const adapt = clamp(0.08 + (1 - credibility / 100) * 0.3, 0.08, 0.38);
   const anchorTarget = (1 - credibility / 100) * w.pace + (credibility / 100) * 0.0015;
-  const infExpect = clamp(w.infExpect + (anchorTarget - w.infExpect) * adapt, -0.02, 0.4);
+  const infExpect = clamp(w.infExpect + (anchorTarget - w.infExpect) * adapt, -0.05, 3);
 
   // inflación del período (expectativas + brecha + dinero + dólar + salarios + shock)
   const costPush = sActive ? sc.costPush : 0;
   const wagePush = clamp((w.wage - w.prevWage) / Math.max(w.prevWage, 1) - w.pace, 0, 0.1) * 0.25;
   let pace = 0.46 * w.pace + 0.2 * infExpect + 0.34 * (gap * 0.09) + mTrend * 0.06 + fxPush + wagePush + costPush + noise() * 0.0008;
-  pace = clamp(pace, -0.05, 0.45);
-  const priceLevel = clamp(w.priceLevel * (1 + pace), 1, 1e14);
+  pace = clamp(pace, -0.15, 3);              // hasta 300%/mes (hiperinflación real); piso de seguridad para no romper el navegador
+  const priceLevel = clamp(w.priceLevel * (1 + pace), 1, 1e18);
 
   // producto real: la oferta no puede superar mucho al potencial → exceso = inflación
   const gdpTarget = potential * (1 + Math.tanh(gap * 0.8) * 0.16);
@@ -455,7 +455,7 @@ function step(w) {
   // dólar oficial: el cepo lo reprime; la intervención lo baja
   let offP = w.cepo ? basePressure * 0.2 : basePressure;
   if (fxDefense > 0) offP -= 0.012;
-  const fx = clamp(w.fx * (1 + clamp(offP, -0.05, 0.4)), 0.01, w.fxBase * 1e9);
+  const fx = clamp(w.fx * (1 + clamp(offP, -0.1, 3)), 0.01, w.fxBase * 1e12);
 
   // dólar blue (paralelo): absorbe la presión reprimida y la desconfianza
   let blueP;
@@ -464,7 +464,7 @@ function step(w) {
   } else {
     blueP = ((fx - w.fxBlue) / Math.max(w.fxBlue, 0.01)) * 0.35 + basePressure; // converge al oficial
   }
-  const fxBlue = clamp(w.fxBlue * (1 + clamp(blueP, -0.06, 0.5)), fx * 0.97, w.fxBase * 1e10);
+  const fxBlue = clamp(w.fxBlue * (1 + clamp(blueP, -0.1, 3)), fx * 0.97, w.fxBase * 1e13);
   const brecha = (fxBlue / Math.max(fx, 0.01) - 1) * 100;
 
   // tipo de cambio efectivo para importaciones (con cepo, importar cuesta como el blue)
@@ -709,18 +709,18 @@ export default function App() {
     flashTimer.current = setTimeout(() => setFlash(null), 650);
   };
 
-  const emit = (pct) => { setW((p) => ({ ...p, M: clamp(p.M * (1 + pct / 100), 1, 1e11) })); doFlash("emit"); };
-  const contract = (pct) => { setW((p) => ({ ...p, M: clamp(p.M * (1 - clamp(pct, 0, 99) / 100), 1, 1e11) })); doFlash("contract"); };
-  const setRate = (v) => setW((p) => ({ ...p, rate: clamp(+(+v).toFixed(2), 0, 1000) }));
-  const setEncaje = (v) => setW((p) => ({ ...p, encaje: clamp(+(+v).toFixed(2), 0, 100) }));
-  const setTariff = (v) => setW((p) => ({ ...p, tariff: clamp(+(+v).toFixed(2), 0, 400) }));
+  const emit = (pct) => { setW((p) => ({ ...p, M: clamp(p.M * (1 + pct / 100), 1, 1e15) })); doFlash("emit"); };
+  const contract = (pct) => { setW((p) => ({ ...p, M: clamp(p.M * (1 - clamp(pct, 0, 100) / 100), 1, 1e15) })); doFlash("contract"); };
+  const setRate = (v) => setW((p) => ({ ...p, rate: clamp(+(+v).toFixed(2), 0, 1e6) }));
+  const setEncaje = (v) => setW((p) => ({ ...p, encaje: clamp(+(+v).toFixed(2), 0, 1000) }));
+  const setTariff = (v) => setW((p) => ({ ...p, tariff: clamp(+(+v).toFixed(2), 0, 100000) }));
   const decreeWage = (pct) => { setW((p) => ({ ...p, wage: p.wage * (1 + pct / 100) })); doFlash("emit"); };
   const intervene = (pct) => {
     setW((p) => {
       if (p.reserves < 0.3) return p;
       const cost = Math.max(0.05, (pct / 100) * 9);
       const eff = p.reserves >= cost ? pct : pct * (p.reserves / cost);
-      return { ...p, fx: p.fx * (1 - eff / 100), reserves: clamp(p.reserves - Math.min(cost, p.reserves), 0, 24), fxDefense: Math.round(8 + pct) };
+      return { ...p, fx: p.fx * (1 - clamp(eff, 0, 99) / 100), reserves: clamp(p.reserves - Math.min(cost, p.reserves), 0, 36), fxDefense: Math.round(8 + pct) };
     });
     doFlash("contract");
   };
@@ -776,6 +776,8 @@ export default function App() {
   };
   const fmtPct = (n) => {
     const a = Math.abs(n);
+    if (a >= 1e12) return (n / 1e12).toFixed(1) + " bill.%";
+    if (a >= 1e9) return (n / 1e9).toFixed(1) + " mil M%";
     if (a >= 1e6) return (n / 1e6).toFixed(1) + "M%";
     if (a >= 1e4) return (n / 1e3).toFixed(0) + "k%";
     return fmt(n, a >= 100 ? 0 : 1) + "%";
