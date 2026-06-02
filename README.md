@@ -1,0 +1,2 @@
+# sim-economia
+Simulador económico. 
