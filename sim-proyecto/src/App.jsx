@@ -51,14 +51,15 @@ function randomPopulation() {
 
 function initWorld() {
   const population = randomPopulation();
-  const gdpPerCapita = 6000 + Math.random() * 49000;     // PIB per cápita anual (6k–55k)
+  const gdpPerCapita = 6000 + Math.random() * 49000;     // PIB per cápita anual en USD (6k–55k)
   const m2Ratio = 0.4 + Math.random() * 0.5;             // relación dinero/PIB (0.4–0.9)
-  const baseNominalGDP = population * gdpPerCapita;        // PIB nominal anual realista
-  const baseM = baseNominalGDP * m2Ratio;                 // base monetaria realista
+  const fxBase = Math.round((0.5 + Math.random() * 1200) * 100) / 100; // cotización inicial del dólar (moneda local por USD)
+  const baseNominalGDP = population * gdpPerCapita * fxBase;  // PIB nominal en MONEDA LOCAL
+  const baseM = baseNominalGDP * m2Ratio;                 // base monetaria en moneda local
   const participation = 0.46 + Math.random() * 0.12;      // tasa de actividad (46%–58%)
   const laborForce = Math.round(population * participation);
   const natAnnual = -0.004 + Math.random() * 0.022;       // crecimiento vegetativo anual (-0,4% a +1,8%)
-  const fxBase = Math.round((0.5 + Math.random() * 1200) * 100) / 100; // cotización inicial del dólar
+  const wage0 = 1800 * fxBase;                            // salario mensual en moneda local (≈ US$1800)
 
   return {
     day: 0,
@@ -73,15 +74,15 @@ function initWorld() {
     unemployment: 5.0,
     rate: 3.0,
     confidence: 70,
-    wage: 1800,
+    wage: wage0,
     pace: 0,
     infExpect: 0,        // expectativas de inflación (inercia)
-    prevWage: 1800,      // para la espiral precios-salarios
+    prevWage: wage0,     // para la espiral precios-salarios
     velocity: 10,
     tradeBalance: 0,     // balanza comercial (superávit/déficit)
     phase: "EQUILIBRIO",
     prevPhase: "EQUILIBRIO",
-    products: PRODUCTS.map((p) => ({ id: p.id, price: p.base, prev: p.base })),
+    products: PRODUCTS.map((p) => ({ id: p.id, price: p.base * fxBase, prev: p.base * fxBase })),
     history: [{ day: 0, infl: 0, gdp: 100, unemp: 5, price: 100, pp: 200, fx: 100, blue: 100 }],
     news: [],
     paper: [],            // ediciones mensuales del diario
@@ -120,7 +121,7 @@ function initWorld() {
     scaleMoney: baseM / 1000,            // M interno 1000 → base monetaria realista
     // --- informe mensual ---
     reports: [],
-    monthStart: { day: 0, priceLevel: 100, gdp: 100, M: 1000, wage: 1800, fx: fxBase, pop: population },
+    monthStart: { day: 0, priceLevel: 100, gdp: 100, M: 1000, wage: wage0, fx: fxBase, pop: population },
     acc: { unempSum: 0, inflSum: 0, count: 0, phaseTally: {}, confSum: 0, povSum: 0 },
   };
 }
@@ -517,7 +518,7 @@ function step(w) {
     const meta = PRODUCTS.find((x) => x.id === p.id);
     const sector = sActive && sc.cats && sc.cats.includes(meta.cat) ? 1 + sc.catMult : 1;
     const tariffFactor = 1 + (w.tariff / 100) * meta.imp;   // el arancel encarece la parte importada
-    const target = meta.base * (priceLevel / 100) * Math.pow(Math.max(fxRatio, 0.01), meta.imp) * tariffFactor * sector;
+    const target = meta.base * w.fxBase * (priceLevel / 100) * Math.pow(Math.max(fxRatio, 0.01), meta.imp) * tariffFactor * sector;
     const idio = 1 + noise() * 0.012 * meta.vol;
     const next = p.price + (target * idio - p.price) * meta.stick * stickMult;
     return { id: p.id, price: Math.max(0.01, next), prev: p.price };
@@ -636,7 +637,7 @@ function step(w) {
     const nominalGDP = (gdp / 100) * (priceLevel / 100) * w.baseNominalGDP;
     const realWageChg = monthWage - monthInfl;
     const popChange = (population / monthStart.pop - 1) * 100;   // variación anual de población
-    const gdpPerCap = nominalGDP / Math.max(population, 1);
+    const gdpPerCap = nominalGDP / Math.max(population, 1) / Math.max(fx, 0.01);  // en USD
     const verdict =
       monthInfl > 150 ? "🔴 Inflación fuera de control: la moneda se desploma." :
       monthFx > 80 ? "🔴 Corrida cambiaria: el dólar se disparó este año." :
@@ -748,7 +749,7 @@ export default function App() {
   const nominalGDP = (w.gdp / 100) * (w.priceLevel / 100) * w.baseNominalGDP;
   const employed = Math.round(w.laborForce * (1 - w.unemployment / 100));
   const unemployed = w.laborForce - employed;
-  const gdpPerCap = nominalGDP / Math.max(w.population, 1);
+  const gdpPerCap = nominalGDP / Math.max(w.population, 1) / Math.max(w.fx, 0.01);  // en USD
   const popGrowthAnnual = w.popGrowthAnnual ?? (w.natRate * 12 * 100 + w.netMigration);
   const fxChgPct = ((w.fx - w.prevFx) / Math.max(w.prevFx, 1e-6)) * 100;
   const brechaPct = (w.fxBlue / Math.max(w.fx, 0.01) - 1) * 100;
@@ -889,7 +890,7 @@ export default function App() {
         {/* ===== INDICADORES SECUNDARIOS ===== */}
         <section style={S.macroGrid}>
           <Stat label="Encaje bancario" value={`${fmt(w.encaje, 0)}%`} tone="neutral" sub="reservas obligatorias" />
-          <Stat label="PIB per cápita" value={fmtMoney(gdpPerCap)} tone="neutral" sub="riqueza por persona" />
+          <Stat label="PIB per cápita" value={"US$" + fmtCount(gdpPerCap)} tone="neutral" sub="por persona (anual)" />
           <Stat label="Credibilidad BC" value={`${fmt(w.credibility, 0)}`}
             tone={w.credibility > 65 ? "good" : w.credibility < 35 ? "bad" : "neutral"} sub="ancla expectativas" />
           <Stat label="Economía informal" value={`${fmt(w.informal, 0)}%`}
@@ -1111,7 +1112,7 @@ export default function App() {
                       <RInfo label="Migración neta" value={`${(r.netMigration ?? 0) >= 0 ? "+" : ""}${fmt(r.netMigration ?? 0, 1)}%`}
                         sub={(r.netMigration ?? 0) >= 0 ? "llega gente" : "emigración"}
                         color={(r.netMigration ?? 0) >= 0 ? "#4dd68a" : "#ff8a3d"} />
-                      <RInfo label="PIB per cápita" value={fmtMoney(r.gdpPerCap ?? 0)} sub="por persona" />
+                      <RInfo label="PIB per cápita" value={"US$" + fmtCount(r.gdpPerCap ?? 0)} sub="por persona" />
                       <RInfo label="Credibilidad BC" value={`${fmt(r.credibility ?? 0, 0)}`}
                         color={(r.credibility ?? 0) > 65 ? "#4dd68a" : (r.credibility ?? 0) < 35 ? "#ff4d4d" : "#e8e4d8"} sub="expectativas" />
                       <RInfo label="Econ. informal" value={`${fmt(r.informal ?? 0, 0)}%`}
